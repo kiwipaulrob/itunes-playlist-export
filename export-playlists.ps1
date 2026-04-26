@@ -375,7 +375,7 @@ foreach ($playlistFile in $playlistFiles) {
         # Peak limiter - prevents clipping from gain boost and EQ
         $filterChain += ",alimiter=limit=${LimiterCeiling}:attack=5:release=50:level=false"
 
-        $ffOutput = & $FfmpegPath -hide_banner -y `
+        $ffOutput = & $FfmpegPath -hide_banner -threads 0 -y `
             -i $srcPath `
             -af $filterChain `
             -codec:a libmp3lame `
