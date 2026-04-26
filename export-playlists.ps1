@@ -666,7 +666,7 @@ foreach ($playlistFile in $playlistFiles) {
             $filterChain += ",equalizer=f=3000:width_type=o:w=1.2:g=2.5"
         }
 
-        $ffOutput = & $FfmpegExe -hide_banner -y `
+        $ffOutput = & $FfmpegExe -hide_banner -threads 0 -y `
             -i $SrcPath `
             -map 0:a `
             -af $filterChain `
