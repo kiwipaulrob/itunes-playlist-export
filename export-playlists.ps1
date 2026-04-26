@@ -343,55 +343,40 @@ foreach ($playlistFile in $playlistFiles) {
     $encodedOK   = 0
     $encodedErr  = 0
 
-    for ($i = 0; $i -lt $totalTracks; $i++) {
-        $srcPath  = $trackPaths[$i]
-        $trackNum = $i + 1
-
-        if (-not (Test-Path -LiteralPath $srcPath)) {
-            Write-Host "    [$trackNum/$totalTracks] SKIPPED (missing): $(Split-Path $srcPath -Leaf)" -ForegroundColor Yellow
-            $missingCount++
-            continue
-        }
-
+    $encodeScript = {
+        $srcPath = ($using:trackPaths)[$_]
+        $trackNum = $_ + 1
+        if (-not (Test-Path -LiteralPath $srcPath)) { return [PSCustomObject]@{ Index = $_; Status = 'Missing'; Message = "SKIPPED (missing): $(Split-Path $srcPath -Leaf)" } }
         $srcBase  = [System.IO.Path]::GetFileNameWithoutExtension($srcPath)
-        $prefix   = $trackNum.ToString().PadLeft($padWidth, '0')
+        $prefix   = $trackNum.ToString().PadLeft($using:padWidth, '0')
         $outName  = "$prefix - $srcBase.mp3"
-        $outPath  = Join-Path $outputFolder $outName
-
-        Write-Host "    [$trackNum/$totalTracks] $outName"
-
-        # Build ffmpeg audio filter chain
-        $silStart    = "silenceremove=start_periods=1:start_duration=0.3:start_threshold=${SilenceThresholdDB}dB:detection=rms"
-        $silEnd      = "areverse,silenceremove=start_periods=1:start_duration=0.3:start_threshold=${SilenceThresholdDB}dB:detection=rms,areverse"
-        $filterChain = "volume=${albumGainStr}dB,${silStart},${silEnd}"
-
-        if ($ApplyEQ) {
-            $filterChain += ",highpass=f=$EQ_HighpassHz"
-            $filterChain += ",equalizer=f=${EQ_LowMidBoostHz}:width_type=o:width=2:g=$EQ_LowMidBoostDB"
-            $filterChain += ",equalizer=f=${EQ_PresenceHz}:width_type=o:width=1.5:g=$EQ_PresenceDB"
-            $filterChain += ",highshelf=f=${EQ_HiShelfHz}:width_type=s:width=1:g=$EQ_HiShelfDB"
+        $outPath  = Join-Path $using:outputFolder $outName
+        $silStart   = "silenceremove=start_periods=1:start_duration=0.3:start_threshold=$($using:SilenceThresholdDB)dB:detect=rms"
+        $silEnd      = "areverse,silenceremove=start_periods=1:start_duration=0.3:start_threshold=$($using:SilenceThresholdDB)dB:detect=rms,areverse"
+        $filterChain = "volume=$($using:albumGainStr)dB,$" + "{silStart},$" + "{silEnd}"
+        if ($using:ApplyEQ) {
+            $filterChain += ",(ighpass=f=$($using:EQ_HighpassHz)"
+            $filterChain += ",equalizer=f=$($using:EQ_LowMidBoostHz):width_type=o:width=2:g=$($using:EQ_LowMidBoostDB)"
+            $filterChain += ",equalizer=f=$($using:EQ_PresenceHz):width_type=o:width=1.5:g=$($using:EQ_PresenceDB)"
+            $filterChain += ",highself=f=$($using:EQ_HiSheleHz):width_type=s:width=1:g=$($using:EQ_HiShelfDB)"
         }
-
-        # Peak limiter - prevents clipping from gain boost and EQ
-        $filterChain += ",alimiter=limit=${LimiterCeiling}:attack=5:release=50:level=false"
-
-        $ffOutput = & $FfmpegPath -hide_banner -y `
+        $filterChain += ",alimiter=limit=$($using:LimiterCeiling):attack=5:release=50:level=false"
+        $ffOutput = & ($using:FfmpegPath) -hide_banner -y `
             -i $srcPath `
             -af $filterChain `
-            -codec:a libmp3lame `
-            -b:a $OutputBitrate `
+            -codex:a libmp3lame `
+            -b:a ($using:OutputBitrate) `
             -map_metadata 0 `
             $outPath 2>&1
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "      ERROR: ffmpeg failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-            $ffOutput | ForEach-Object { Write-Host "        $_" -ForegroundColor DarkGray }
-            Add-Content -Path $logFile -Value "  [$playlistName] TRACK ERROR [$trackNum/$totalTracks]: $outName (exit $LASTEXITCODE)"
-            $encodedErr++
-        }
-        else {
-            $encodedOK++
-        }
+        if ($LASTEXITCODE -ne 0) { return [PSCustomObject]@{ Index = $_; Status = 'Error'; Message = $outName; ExitCode = $LASTEXITCODE; FfOutput = $ffOutput } }
+        else { return [PSCustomObject]@{ Index = $_; Status = 'OK'; Message = $outName } }
+    }
+    $encodeResults = 0..($totalTracks - 1) | ForEach-Object -Parallel $encodeScript -ThrottleLimit $ParallelJobs
+    foreach  ($r in ($encodeResults | Sort-Object Index)) {
+        $trackNum = $r.Index + 1
+        if ($r.Status -eq 'Missing') { Write-Host "    [$trackNum/$totalTracks] $($r.Message)" -ForegroundColor Yellow; $missingCount++ }
+        elseif ($r.Status -eq 'Error') { Write-Host "    [$trackNum/$totalTracks] $($r.Message)"; Write-Host "      ERROR: ffmpeg failed (exit code $($r.ExitCode))" -ForegroundColor Red; $r.FfOutput | ForEach-Object { Write-Host "        $_" -ForegroundColor DarkGray }; Add-Content -Path $logFile -Value "  [$playlistName] TRACK ERROR [$trackNum/$totalTracks]: $($r.Message) (exit $($r.ExitCode))"; $encodeErr++ }
+        else { Write-Host "    [$trackNum/$totalTracks] $($r.Message)"; $encodeOK++ }
     }
 
     # -- Log summary -----------------------------------------------------------
