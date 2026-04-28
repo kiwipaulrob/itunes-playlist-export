@@ -308,6 +308,10 @@ foreach ($playlistFile in $playlistFiles) {
         foreach ($r in ($rawResults | Sort-Object Index)) {
             $trackNum = $r.Index + 1
             $leaf     = Split-Path $r.Path -Leaf
+            $pctComplete = [int](($trackNum / $totalTracks) * 100)
+            
+            Write-Progress -Activity "Phase 1: Measuring loudness" -Status "Track $trackNum of $totalTracks" -PercentComplete $pctComplete
+            
             if ($r.Missing) {
                 Write-Host "    [$trackNum/$totalTracks] WARNING: File not found: $leaf" -ForegroundColor Yellow
                 $lufsValues += $null
@@ -321,6 +325,7 @@ foreach ($playlistFile in $playlistFiles) {
                 $lufsValues += $r.LUFS
             }
         }
+        Write-Progress -Activity "Phase 1: Measuring loudness" -Completed
 
         # Calculate album gain
         $validLUFS = @($lufsValues | Where-Object { $null -ne $_ })
@@ -338,32 +343,51 @@ foreach ($playlistFile in $playlistFiles) {
     Write-Host "  Album gain : ${albumGainStr} dB" -ForegroundColor Green
 
     # -- Phase 2: Encode -------------------------------------------------------
-    Write-Host "`n  [Phase 2] Encoding..." -ForegroundColor Yellow
-    $padWidth    = [Math]::Max($totalTracks.ToString().Length, 2)
-    $encodedOK   = 0
-    $encodedErr  = 0
+    Write-Host "`n  [Phase 2] Encoding ($totalTracks tracks, up to $ParallelJobs at a time)..." -ForegroundColor Yellow
+    $padWidth = [Math]::Max($totalTracks.ToString().Length, 2)
 
-    for ($i = 0; $i -lt $totalTracks; $i++) {
-        $srcPath  = $trackPaths[$i]
-        $trackNum = $i + 1
+    # Helper function for Phase 2 encoding (passed to parallel threads)
+    function Encode-TrackMP3 {
+        param(
+            [int]$Index,
+            [string]$SrcPath,
+            [string]$OutputFolder,
+            [string]$FfmpegExe,
+            [string]$AlbumGainStr,
+            [int]$SilenceThresholdDB,
+            [bool]$ApplyEQ,
+            [int]$EQ_HighpassHz,
+            [int]$EQ_LowMidBoostHz,
+            [int]$EQ_LowMidBoostDB,
+            [int]$EQ_PresenceHz,
+            [int]$EQ_PresenceDB,
+            [int]$EQ_HiShelfHz,
+            [int]$EQ_HiShelfDB,
+            [double]$LimiterCeiling,
+            [string]$OutputBitrate,
+            [string]$PadWidth
+        )
 
-        if (-not (Test-Path -LiteralPath $srcPath)) {
-            Write-Host "    [$trackNum/$totalTracks] SKIPPED (missing): $(Split-Path $srcPath -Leaf)" -ForegroundColor Yellow
-            $missingCount++
-            continue
-        }
-
-        $srcBase  = [System.IO.Path]::GetFileNameWithoutExtension($srcPath)
-        $prefix   = $trackNum.ToString().PadLeft($padWidth, '0')
+        $trackNum = $Index + 1
+        $srcBase  = [System.IO.Path]::GetFileNameWithoutExtension($SrcPath)
+        $prefix   = $trackNum.ToString().PadLeft([int]$PadWidth, '0')
         $outName  = "$prefix - $srcBase.mp3"
-        $outPath  = Join-Path $outputFolder $outName
+        $outPath  = Join-Path $OutputFolder $outName
 
-        Write-Host "    [$trackNum/$totalTracks] $outName"
+        # Check if file exists
+        if (-not (Test-Path -LiteralPath $SrcPath)) {
+            return [PSCustomObject]@{
+                Index    = $Index
+                Status   = 'MISSING'
+                Message  = "SKIPPED (missing): $(Split-Path $SrcPath -Leaf)"
+                OutName  = $outName
+            }
+        }
 
         # Build ffmpeg audio filter chain
         $silStart    = "silenceremove=start_periods=1:start_duration=0.3:start_threshold=${SilenceThresholdDB}dB:detection=rms"
         $silEnd      = "areverse,silenceremove=start_periods=1:start_duration=0.3:start_threshold=${SilenceThresholdDB}dB:detection=rms,areverse"
-        $filterChain = "volume=${albumGainStr}dB,${silStart},${silEnd}"
+        $filterChain = "volume=${AlbumGainStr}dB,${silStart},${silEnd}"
 
         if ($ApplyEQ) {
             $filterChain += ",highpass=f=$EQ_HighpassHz"
@@ -375,8 +399,8 @@ foreach ($playlistFile in $playlistFiles) {
         # Peak limiter - prevents clipping from gain boost and EQ
         $filterChain += ",alimiter=limit=${LimiterCeiling}:attack=5:release=50:level=false"
 
-        $ffOutput = & $FfmpegPath -hide_banner -y `
-            -i $srcPath `
+        $ffOutput = & $FfmpegExe -hide_banner -y `
+            -i $SrcPath `
             -af $filterChain `
             -codec:a libmp3lame `
             -b:a $OutputBitrate `
@@ -384,15 +408,66 @@ foreach ($playlistFile in $playlistFiles) {
             $outPath 2>&1
 
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "      ERROR: ffmpeg failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-            $ffOutput | ForEach-Object { Write-Host "        $_" -ForegroundColor DarkGray }
-            Add-Content -Path $logFile -Value "  [$playlistName] TRACK ERROR [$trackNum/$totalTracks]: $outName (exit $LASTEXITCODE)"
-            $encodedErr++
+            return [PSCustomObject]@{
+                Index    = $Index
+                Status   = 'ERROR'
+                Message  = "ERROR: ffmpeg failed (exit code $LASTEXITCODE)"
+                OutName  = $outName
+            }
         }
-        else {
-            $encodedOK++
+
+        return [PSCustomObject]@{
+            Index    = $Index
+            Status   = 'OK'
+            Message  = "Encoded: $outName"
+            OutName  = $outName
         }
     }
+
+    $rawResults = 0..($totalTracks - 1) | ForEach-Object -Parallel {
+        Encode-TrackMP3 `
+            -Index $_ `
+            -SrcPath ($using:trackPaths)[$_] `
+            -OutputFolder $using:outputFolder `
+            -FfmpegExe $using:FfmpegPath `
+            -AlbumGainStr $using:albumGainStr `
+            -SilenceThresholdDB $using:SilenceThresholdDB `
+            -ApplyEQ $using:ApplyEQ `
+            -EQ_HighpassHz $using:EQ_HighpassHz `
+            -EQ_LowMidBoostHz $using:EQ_LowMidBoostHz `
+            -EQ_LowMidBoostDB $using:EQ_LowMidBoostDB `
+            -EQ_PresenceHz $using:EQ_PresenceHz `
+            -EQ_PresenceDB $using:EQ_PresenceDB `
+            -EQ_HiShelfHz $using:EQ_HiShelfHz `
+            -EQ_HiShelfDB $using:EQ_HiShelfDB `
+            -LimiterCeiling $using:LimiterCeiling `
+            -OutputBitrate $using:OutputBitrate `
+            -PadWidth $using:padWidth
+    } -ThrottleLimit $ParallelJobs
+
+    $encodedOK  = 0
+    $encodedErr = 0
+
+    foreach ($r in ($rawResults | Sort-Object Index)) {
+        $trackNum = $r.Index + 1
+        $pctComplete = [int](($trackNum / $totalTracks) * 100)
+        
+        Write-Progress -Activity "Phase 2: Encoding audio" -Status "Track $trackNum of $totalTracks - $($r.Status)" -PercentComplete $pctComplete
+        Write-Host "    [$trackNum/$totalTracks] $($r.Message)" -ForegroundColor $(if ($r.Status -eq 'OK') { 'Green' } elseif ($r.Status -eq 'MISSING') { 'Yellow' } else { 'Red' })
+
+        if ($r.Status -eq 'OK') {
+            $encodedOK++
+        }
+        elseif ($r.Status -eq 'ERROR') {
+            $encodedErr++
+            Add-Content -Path $logFile -Value "  [$playlistName] TRACK ERROR [$trackNum/$totalTracks]: $($r.OutName)"
+        }
+        elseif ($r.Status -eq 'MISSING') {
+            $missingCount++
+            Add-Content -Path $logFile -Value "  [$playlistName] TRACK MISSING [$trackNum/$totalTracks]: $($r.OutName)"
+        }
+    }
+    Write-Progress -Activity "Phase 2: Encoding audio" -Completed
 
     # -- Log summary -----------------------------------------------------------
     $summary = "[$playlistName] Format=$sourceFormat Total=$totalTracks Encoded=$encodedOK Missing=$missingCount Errors=$encodedErr AlbumGain=${albumGainStr}dB"
