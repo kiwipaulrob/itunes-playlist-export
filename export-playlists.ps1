@@ -579,7 +579,11 @@ foreach ($playlistFile in $playlistFiles) {
         }
     }
 
+    # Serialize Encode-TrackMP3 function for parallel scope
+    $encodeFuncDef = "function Encode-TrackMP3 { ${function:Encode-TrackMP3} }"
+
     $rawResults = $tracksToProcess | ForEach-Object -Parallel {
+        . ([scriptblock]::Create($using:encodeFuncDef))
         Encode-TrackMP3 `
             -Index $_ `
             -SrcPath ($using:trackPaths)[$_] `
