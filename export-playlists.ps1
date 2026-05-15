@@ -21,6 +21,19 @@ if (-not (Test-Path $configFile)) {
 }
 . $configFile
 
+# -- Auto-detect CPU cores if $ParallelJobs not explicitly set ----------------
+if ($ParallelJobs -eq 0) {
+    try {
+        $cores = (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
+        $ParallelJobs = [Math]::Max(4, $cores - 1)
+        Write-Host "Auto-detected $cores CPU cores → using $ParallelJobs parallel jobs" -ForegroundColor Cyan
+    }
+    catch {
+        Write-Host "Could not auto-detect CPU cores, using default: 4" -ForegroundColor Yellow
+        $ParallelJobs = 4
+    }
+}
+
 # -- Global error trap ---------------------------------------------------------
 trap {
     Write-Host "`nUNEXPECTED ERROR: $_" -ForegroundColor Red

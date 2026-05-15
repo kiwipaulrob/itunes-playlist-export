@@ -16,7 +16,8 @@ Perfect for creating portable music collections for Bluetooth speakers, car audi
 ✓ **Peak limiting** — Prevents clipping after gain application  
 ✓ **M4A to MP3** — Automatically re-encodes M4A files; MP3 files copied or re-encoded as configured  
 ✓ **Sequential numbering** — Adds track number prefix to output filenames while preserving original names  
-✓ **Parallel processing** — Phase 1 loudness measurement runs up to 4 tracks simultaneously  
+✓ **Auto-scaling parallelisation** — CPU core detection scales parallel jobs automatically (8 cores → 7 jobs)  
+✓ **Smart change detection** — Manifest-based tracking skips unchanged playlists, huge time savings  
 ✓ **Overwrite protection** — Asks before overwriting existing playlist output folders  
 ✓ **Detailed logging** — Writes `export_log.txt` to each output folder with per-track timing and results  
 
@@ -270,6 +271,13 @@ If the script fails:
 ---
 
 ## Changelog
+
+**v1.5** (May 2026)
+- **CPU core auto-scaling**: Script automatically detects logical CPU core count on startup
+- If `$ParallelJobs = 0` (default): Sets `$ParallelJobs = (cores - 1)`, minimum 4
+- Example: 8 cores → 7 parallel jobs; 16 cores → 15 parallel jobs (leaves OS breathing room)
+- User can override by setting explicit `$ParallelJobs` number in config
+- Optimal performance on any hardware without manual configuration
 
 **v1.4** (May 2026)
 - **Smart change detection**: Manifest-based tracking of playlist modifications via `.export-manifest.json`

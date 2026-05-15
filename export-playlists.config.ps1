@@ -17,7 +17,7 @@ $SilenceThresholdDB = -60               # Silence detection level in dB (lower =
 $ApplyReplayGain    = $true
 $TargetLUFS         = -16.0              # Target loudness in LUFS (-16 is good for small speakers; -14 is louder)
 $LimiterCeiling     = 0.95              # Peak limiter ceiling as linear amplitude (0.95 = approx -0.45 dBFS)
-$ParallelJobs       = 4                 # Tracks measured simultaneously in Phase 1 (4 is safe; raise on fast NVMe, lower on HDD)
+$ParallelJobs       = 0                 # Parallel jobs: 0 = auto-detect (cores - 1, min 4); set to number for override
 
 # --- EQ (optimised for dual 40mm portable speaker) ---
 # Set $ApplyEQ = $false to bypass all EQ processing
