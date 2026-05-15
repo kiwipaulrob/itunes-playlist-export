@@ -401,6 +401,7 @@ foreach ($playlistFile in $playlistFiles) {
 
         $ffOutput = & $FfmpegExe -hide_banner -y `
             -i $SrcPath `
+            -map 0:a `
             -af $filterChain `
             -codec:a libmp3lame `
             -b:a $OutputBitrate `
