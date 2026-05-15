@@ -43,6 +43,75 @@ function Get-SafeFolderName {
     return ($Name -replace '[\\/:*?"<>|]', '_').Trim()
 }
 
+# -- Helper: read manifest JSON file from output folder --------------------------
+function Get-ExportManifest {
+    param([string]$OutputFolder)
+    $manifestPath = Join-Path $OutputFolder ".export-manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        return $null
+    }
+    try {
+        return Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+# -- Helper: write manifest JSON file to output folder ---------------------------
+function Set-ExportManifest {
+    param([string]$OutputFolder, [object]$Manifest)
+    $manifestPath = Join-Path $OutputFolder ".export-manifest.json"
+    $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+}
+
+# -- Helper: compute hash of XML or M3U8 file for change detection ---------------
+function Get-PlaylistHash {
+    param([string]$FilePath)
+    $bytes = [System.IO.File]::ReadAllBytes($FilePath)
+    $hash = [System.Security.Cryptography.SHA256]::ComputeHash($bytes)
+    return [Convert]::ToBase64String($hash)
+}
+
+# -- Helper: compare old and new track lists, return action map -------------------
+function Compare-TrackLists {
+    param([string[]]$OldPaths, [string[]]$NewPaths)
+    
+    $added    = @()
+    $removed  = @()
+    $unchanged = @()
+    
+    $oldSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $newSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    
+    foreach ($p in $OldPaths) { $oldSet.Add($p) | Out-Null }
+    foreach ($p in $NewPaths) { $newSet.Add($p) | Out-Null }
+    
+    # Find unchanged and modified tracks
+    foreach ($oldPath in $OldPaths) {
+        if ($newSet.Contains($oldPath)) {
+            $unchanged += $oldPath
+        } else {
+            $removed += $oldPath
+        }
+    }
+    
+    # Find added tracks
+    foreach ($newPath in $NewPaths) {
+        if (-not $oldSet.Contains($newPath)) {
+            $added += $newPath
+        }
+    }
+    
+    return [PSCustomObject]@{
+        Added      = $added
+        Removed    = $removed
+        Unchanged  = $unchanged
+        TotalAdded = $added.Count
+        TotalRemoved = $removed.Count
+    }
+}
+
 # -- Helper: parse .m3u8 and return ordered array of file paths ----------------
 function Get-M3U8Tracks {
     param([string]$FilePath)
@@ -258,17 +327,88 @@ foreach ($playlistFile in $playlistFiles) {
     Write-Host "  Tracks    : $totalTracks"
     Write-Host "  Output    : $outputFolder"
 
-    # Check existing output folder
+    # -- Manifest-based change detection ------------------------------------------
+    $tracksToProcess = @()
+    $playlistHashNow = Get-PlaylistHash -FilePath $playlistFile.FullName
+    $existingManifest = $null
+    
     if (Test-Path $outputFolder) {
-        $answer = Read-Host "  Folder already exists. Overwrite? (y/n)"
-        if ($answer -notin @('y', 'Y')) {
-            Write-Host "  Skipped." -ForegroundColor Yellow
-            Add-Content -Path $logFile -Value "[$playlistName] SKIPPED (folder exists, user declined overwrite)"
-            continue
+        $existingManifest = Get-ExportManifest -OutputFolder $outputFolder
+        
+        if ($existingManifest) {
+            # Manifest exists - check if playlist has changed
+            if ($existingManifest.PlaylistHash -eq $playlistHashNow) {
+                Write-Host "  ✓ Playlist unchanged since last run." -ForegroundColor Green
+                Write-Host "  Skipped." -ForegroundColor Yellow
+                Add-Content -Path $logFile -Value "[$playlistName] SKIPPED (no changes since $(($existingManifest.LastRunTime)?.Substring(0,10) ?? 'previous run'))"
+                continue
+            }
+            
+            # Playlist has changed - detect what's new/removed
+            $comparison = Compare-TrackLists -OldPaths $existingManifest.EncodedTracks -NewPaths $trackPaths
+            Write-Host "  ⚠ Playlist changed:" -ForegroundColor Yellow
+            Write-Host "    Added  : $($comparison.TotalAdded)"
+            Write-Host "    Removed: $($comparison.TotalRemoved)"
+            Write-Host "    Changed: $($comparison.Unchanged.Count) unchanged"
+            
+            # Ask user what to do
+            Write-Host "  Options: (A)ll tracks, (N)ew only, (S)kip, (D)elete & recreate?" -ForegroundColor Cyan
+            $action = Read-Host "  Choose"
+            
+            if ($action -in @('d', 'D')) {
+                # Delete and recreate
+                Write-Host "  Deleting and recreating folder..."
+                Remove-Item -Path $outputFolder -Recurse -Force
+                New-Item -ItemType Directory -Path $outputFolder | Out-Null
+                $tracksToProcess = @(0..($totalTracks - 1))
+            }
+            elseif ($action -in @('n', 'N')) {
+                # Encode only new tracks (but renumber all)
+                Write-Host "  Encoding added tracks only..."
+                # We need to track which indices are new
+                $newIndices = @()
+                for ($i = 0; $i -lt $trackPaths.Count; $i++) {
+                    if ($trackPaths[$i] -in $comparison.Added) {
+                        $newIndices += $i
+                    }
+                }
+                $tracksToProcess = $newIndices
+                # Still remove old files since we're renumbering (if tracks were reordered)
+                Remove-Item -Path $outputFolder -Recurse -Force
+                New-Item -ItemType Directory -Path $outputFolder | Out-Null
+            }
+            elseif ($action -in @('a', 'A')) {
+                # Re-encode all
+                Write-Host "  Re-encoding all tracks..."
+                Remove-Item -Path $outputFolder -Recurse -Force
+                New-Item -ItemType Directory -Path $outputFolder | Out-Null
+                $tracksToProcess = @(0..($totalTracks - 1))
+            }
+            else {
+                Write-Host "  Skipped." -ForegroundColor Yellow
+                Add-Content -Path $logFile -Value "[$playlistName] SKIPPED (user declined update)"
+                continue
+            }
         }
-        Remove-Item -Path $outputFolder -Recurse -Force
+        else {
+            # Folder exists but no manifest (legacy or manual) - treat as new
+            Write-Host "  ⚠ Folder exists (no manifest found)." -ForegroundColor Yellow
+            $answer = Read-Host "  Overwrite? (y/n)"
+            if ($answer -notin @('y', 'Y')) {
+                Write-Host "  Skipped." -ForegroundColor Yellow
+                Add-Content -Path $logFile -Value "[$playlistName] SKIPPED (folder exists, user declined overwrite)"
+                continue
+            }
+            Remove-Item -Path $outputFolder -Recurse -Force
+            New-Item -ItemType Directory -Path $outputFolder | Out-Null
+            $tracksToProcess = @(0..($totalTracks - 1))
+        }
     }
-    New-Item -ItemType Directory -Path $outputFolder | Out-Null
+    else {
+        # Folder doesn't exist - create and encode all
+        New-Item -ItemType Directory -Path $outputFolder | Out-Null
+        $tracksToProcess = @(0..($totalTracks - 1))
+    }
 
     if ($totalTracks -eq 0) {
         Write-Host "  No tracks found in playlist." -ForegroundColor Yellow
@@ -425,7 +565,7 @@ foreach ($playlistFile in $playlistFiles) {
         }
     }
 
-    $rawResults = 0..($totalTracks - 1) | ForEach-Object -Parallel {
+    $rawResults = $tracksToProcess | ForEach-Object -Parallel {
         Encode-TrackMP3 `
             -Index $_ `
             -SrcPath ($using:trackPaths)[$_] `
@@ -469,6 +609,17 @@ foreach ($playlistFile in $playlistFiles) {
         }
     }
     Write-Progress -Activity "Phase 2: Encoding audio" -Completed
+
+    # -- Write manifest for next run -------------------------------------------
+    $manifest = [PSCustomObject]@{
+        PlaylistName  = $playlistName
+        PlaylistHash  = $playlistHashNow
+        EncodedTracks = $trackPaths
+        LastRunTime   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        TotalTracks   = $totalTracks
+        SourceFormat  = $sourceFormat
+    }
+    Set-ExportManifest -OutputFolder $outputFolder -Manifest $manifest
 
     # -- Log summary -----------------------------------------------------------
     $summary = "[$playlistName] Format=$sourceFormat Total=$totalTracks Encoded=$encodedOK Missing=$missingCount Errors=$encodedErr AlbumGain=${albumGainStr}dB"

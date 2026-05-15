@@ -150,6 +150,38 @@ OutputDir\
 
 ---
 
+## Smart Change Detection (v1.4+)
+
+Each output folder now contains a **`.export-manifest.json`** file that tracks playlist modifications. 
+
+### How It Works
+
+**First run:**
+- Creates output folder, encodes all tracks, saves manifest
+
+**Second run (same playlist):**
+- Compares playlist file hash against manifest
+- **If unchanged** → Skips entire playlist (shows ✓ Playlist unchanged)
+- **If changed** → Shows what's new:
+  - Added tracks
+  - Removed tracks  
+  - Reordered tracks (same files, different order)
+- Offers options:
+  - **(A)ll** — Re-encode all tracks (full rebuild)
+  - **(N)ew** — Encode only added tracks (faster for minor additions)
+  - **(D)elete** — Delete folder and rebuild from scratch
+  - **(S)kip** — Skip this playlist
+
+### Benefit
+
+For large music libraries (100+ playlists with 50+ tracks each), unchanged playlists skip entirely → saves hours of processing on subsequent runs.
+
+### Manual Override
+
+Delete `.export-manifest.json` from any output folder to force a full rebuild on next run.
+
+---
+
 ## Troubleshooting
 
 ### "PowerShell 7 not found"
@@ -238,6 +270,16 @@ If the script fails:
 ---
 
 ## Changelog
+
+**v1.4** (May 2026)
+- **Smart change detection**: Manifest-based tracking of playlist modifications via `.export-manifest.json`
+- On subsequent runs, detects if playlist file has changed (added/removed/reordered tracks)
+- Unchanged playlists skip processing entirely → massive time savings for large libraries
+- User options when changes detected: **(A)ll tracks**, **(N)ew only**, **(D)elete & recreate**, or **(S)kip**
+
+**v1.3** (May 2026)
+- Added `-map 0:a` to ffmpeg command to skip video/artwork streams during encoding
+- Fixes transcode failures (exit code 69) on MP3s with corrupted or mismatched embedded album art
 
 **v1.2** (Apr 2026)
 - **Phase 2 parallelisation**: Transcoding now runs up to `$ParallelJobs` tracks simultaneously (~60–70% faster on 8-core CPUs)
