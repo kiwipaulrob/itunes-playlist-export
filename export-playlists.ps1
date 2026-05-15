@@ -369,12 +369,19 @@ foreach ($playlistFile in $playlistFiles) {
             Write-Host "  Options: (A)ll tracks, (N)ew only, (S)kip, (D)elete & recreate?" -ForegroundColor Cyan
             $action = Read-Host "  Choose"
             
+            # Save old manifest LUFS before deletion (for "New only" option)
+            $oldManifestLUFS = @()
+            if ($null -ne $existingManifest.TrackLUFS) {
+                $oldManifestLUFS = @($existingManifest.TrackLUFS)
+            }
+            
             if ($action -in @('d', 'D')) {
                 # Delete and recreate
                 Write-Host "  Deleting and recreating folder..."
                 Remove-Item -Path $outputFolder -Recurse -Force
                 New-Item -ItemType Directory -Path $outputFolder | Out-Null
                 $tracksToProcess = @(0..($totalTracks - 1))
+                $loadedLUFS = @()
             }
             elseif ($action -in @('n', 'N')) {
                 # Encode only new tracks (but renumber all)
@@ -390,6 +397,8 @@ foreach ($playlistFile in $playlistFiles) {
                 # Still remove old files since we're renumbering (if tracks were reordered)
                 Remove-Item -Path $outputFolder -Recurse -Force
                 New-Item -ItemType Directory -Path $outputFolder | Out-Null
+                # Load LUFS from old manifest for album gain calculation
+                $loadedLUFS = $oldManifestLUFS
             }
             elseif ($action -in @('a', 'A')) {
                 # Re-encode all
@@ -397,6 +406,7 @@ foreach ($playlistFile in $playlistFiles) {
                 Remove-Item -Path $outputFolder -Recurse -Force
                 New-Item -ItemType Directory -Path $outputFolder | Out-Null
                 $tracksToProcess = @(0..($totalTracks - 1))
+                $loadedLUFS = @()
             }
             else {
                 Write-Host "  Skipped." -ForegroundColor Yellow
@@ -416,12 +426,19 @@ foreach ($playlistFile in $playlistFiles) {
             Remove-Item -Path $outputFolder -Recurse -Force
             New-Item -ItemType Directory -Path $outputFolder | Out-Null
             $tracksToProcess = @(0..($totalTracks - 1))
+            $loadedLUFS = @()
         }
     }
     else {
         # Folder doesn't exist - create and encode all
         New-Item -ItemType Directory -Path $outputFolder | Out-Null
         $tracksToProcess = @(0..($totalTracks - 1))
+        $loadedLUFS = @()
+    }
+    
+    # Ensure $loadedLUFS is initialized
+    if (-not $PSBoundParameters.ContainsKey('loadedLUFS')) {
+        $loadedLUFS = @()
     }
 
     if ($totalTracks -eq 0) {
@@ -434,18 +451,26 @@ foreach ($playlistFile in $playlistFiles) {
     # -- Phase 1: Measure loudness ---------------------------------------------
     if (-not $ParallelJobs -or $ParallelJobs -lt 1) { $ParallelJobs = 4 }
     $missingCount = 0
+    $lufsValues = @(0..$($totalTracks-1) | ForEach-Object { $null })  # Initialize full array with nulls
 
     if (-not $ApplyReplayGain) {
         Write-Host "`n  [Phase 1] Skipped (ReplayGain disabled)." -ForegroundColor DarkGray
         $albumGainDB = 0.0
     }
     else {
-        Write-Host "`n  [Phase 1] Measuring loudness ($totalTracks tracks, up to $ParallelJobs at a time)..." -ForegroundColor Yellow
-        $lufsValues     = @()
+        # Populate LUFS array from loadedLUFS for tracks NOT being re-measured
+        for ($i = 0; $i -lt $loadedLUFS.Count; $i++) {
+            if ($i -notin $tracksToProcess) {
+                $lufsValues[$i] = $loadedLUFS[$i]
+            }
+        }
+
+        # Measure only tracks in $tracksToProcess
+        Write-Host "`n  [Phase 1] Measuring loudness ($($tracksToProcess.Count) tracks of $totalTracks, up to $ParallelJobs at a time)..." -ForegroundColor Yellow
         $measureFuncDef = "function Measure-TrackLUFS { ${function:Measure-TrackLUFS} }"
         $ffExe          = $FfmpegPath
 
-        $rawResults = 0..($totalTracks - 1) | ForEach-Object -Parallel {
+        $rawResults = $tracksToProcess | ForEach-Object -Parallel {
             . ([scriptblock]::Create($using:measureFuncDef))
             $i       = $_
             $src     = ($using:trackPaths)[$i]
@@ -468,20 +493,20 @@ foreach ($playlistFile in $playlistFiles) {
             
             if ($r.Missing) {
                 Write-Host "    [$trackNum/$totalTracks] WARNING: File not found: $leaf" -ForegroundColor Yellow
-                $lufsValues += $null
+                $lufsValues[$r.Index] = $null
             }
             elseif ($null -eq $r.LUFS) {
                 Write-Host "    [$trackNum/$totalTracks] WARNING: Could not measure loudness, excluded from album average: $leaf" -ForegroundColor Yellow
-                $lufsValues += $null
+                $lufsValues[$r.Index] = $null
             }
             else {
                 Write-Host "    [$trackNum/$totalTracks] $($r.LUFS) LUFS  $leaf"
-                $lufsValues += $r.LUFS
+                $lufsValues[$r.Index] = $r.LUFS
             }
         }
         Write-Progress -Activity "Phase 1: Measuring loudness" -Completed
 
-        # Calculate album gain
+        # Calculate album gain from all measured LUFS (including loaded ones)
         $validLUFS = @($lufsValues | Where-Object { $null -ne $_ })
         if ($validLUFS.Count -gt 0) {
             $avgLUFS     = ($validLUFS | Measure-Object -Average).Average
@@ -609,7 +634,7 @@ foreach ($playlistFile in $playlistFiles) {
 
     foreach ($r in ($rawResults | Sort-Object Index)) {
         $trackNum = $r.Index + 1
-        $pctComplete = [int](($trackNum / $totalTracks) * 100)
+        $pctComplete = [int](($trackNum / $tracksToProcess.Count) * 100)
         
         Write-Progress -Activity "Phase 2: Encoding audio" -Status "Track $trackNum of $totalTracks - $($r.Status)" -PercentComplete $pctComplete
         Write-Host "    [$trackNum/$totalTracks] $($r.Message)" -ForegroundColor $(if ($r.Status -eq 'OK') { 'Green' } elseif ($r.Status -eq 'MISSING') { 'Yellow' } else { 'Red' })
@@ -633,6 +658,7 @@ foreach ($playlistFile in $playlistFiles) {
         PlaylistName  = $playlistName
         PlaylistHash  = $playlistHashNow
         EncodedTracks = $trackPaths
+        TrackLUFS     = @($lufsValues)
         LastRunTime   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         TotalTracks   = $totalTracks
         SourceFormat  = $sourceFormat

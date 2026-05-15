@@ -49,7 +49,7 @@ The script now tracks playlist changes via a **manifest file** (`.export-manifes
    - If **unchanged**: Skips entire playlist (✓ Playlist unchanged since last run)
    - If **changed**: Detects added/removed/reordered tracks and offers options:
      - **(A)ll tracks** — Re-encode all tracks (full rebuild)
-     - **(N)ew only** — Encode only added tracks, delete and recreate folder (ensures correct sequential numbering)
+     - **\(N\)ew only** — Encode only added tracks; loads unchanged tracks' LUFS values from manifest and recalculates album gain from all tracks (ensures gain consistency)
      - **(D)elete & recreate** — Same as (A), with explicit delete step
      - **(S)kip** — Skip this playlist
 
@@ -60,6 +60,7 @@ The script now tracks playlist changes via a **manifest file** (`.export-manifes
   "PlaylistName": "Nuggets 124 - Covers VI",
   "PlaylistHash": "SHA256 base64-encoded hash",
   "EncodedTracks": ["P:\\music\\...", "P:\\music\\..."],
+  "TrackLUFS": [-14.2, -15.1, -13.8, null, -16.5],
   "LastRunTime": "2026-05-16 06:46:00",
   "TotalTracks": 27,
   "SourceFormat": "m3u8"
@@ -69,6 +70,7 @@ The script now tracks playlist changes via a **manifest file** (`.export-manifes
 ### Notes
 
 - SHA256 hash detects any change to the playlist file (added/removed/reordered tracks)
+- **TrackLUFS** array (v1.5.1+): Per-track integrated loudness values (LUFS) from Phase 1 measurement. `null` entries indicate measurement failed for that track. Used during "New only" updates to recalculate album-level gain without re-measuring unchanged tracks.
 - Manifest is **per-playlist** (one per output folder)
 - If folder exists but no manifest → treat as legacy export, ask user to overwrite or skip
 - Track numbering may shift if tracks are added mid-list (sequential 01, 02, 03… always preserves order)
