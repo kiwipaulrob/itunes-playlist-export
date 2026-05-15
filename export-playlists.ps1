@@ -69,7 +69,8 @@ function Set-ExportManifest {
 function Get-PlaylistHash {
     param([string]$FilePath)
     $bytes = [System.IO.File]::ReadAllBytes($FilePath)
-    $hash = [System.Security.Cryptography.SHA256]::ComputeHash($bytes)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $hash = $sha256.ComputeHash($bytes)
     return [Convert]::ToBase64String($hash)
 }
 
