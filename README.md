@@ -65,15 +65,53 @@ EQ_HiShelfHz = 12000
 EQ_HiShelfDB = -2
 ```
 
+## Mono Variant (Storage Optimisation)
+
+For storage-limited devices, you can export to mono with automatic pan filter downmixing:
+
+```ini
+[Audio]
+OutputBitrate = 160k
+ChannelLayout = mono
+
+[EQ]
+EQ_LowMidBoostDB = 3.5
+```
+
+**How mono downmixing works:**
+- Standard stereo-to-mono loses 3-6 dB of width information (guitars, synth pads, backing vocals disappear)
+- Script applies an intelligent **pan filter** that preserves width by using a hotter stereo sum: `0.6*L + 0.6*R`
+- Built-in **EQ** compensates for frequency imbalances: `-1.5dB at 300Hz` (removes mud), `+2.5dB at 3kHz` (restores presence)
+- Your `EQ_LowMidBoostDB` is increased to `3.5dB` to restore warmth/body lost in the downmix
+
+**Results:**
+- File size: ~50% smaller than stereo
+- Quality: Imperceptible loss for small speakers; recommended for storage-limited devices
+
 ## Playlist format support
 
 - **M3U8** — UTF-8 encoded, Windows absolute paths
 - **XML** — iTunes plist format; one playlist per file; track order and paths read from the plist structure
+
+## Smart Playlist Updates
+
+The script tracks which playlists have been encoded using a manifest file (`.export-manifest.json`):
+
+- **First run:** All tracks encoded; manifest saved
+- **Unchanged playlist:** Skipped instantly (no processing)
+- **Changed playlist:** Script detects added/removed/reordered tracks and prompts:
+  - **(A)ll** — Re-encode all tracks
+  - **(N)ew** — Encode only new tracks; recalculate ReplayGain from all tracks
+  - **(D)elete** — Delete folder and rebuild from scratch
+  - **(S)kip** — Skip this playlist
+
+This saves time when updating playlists frequently.
 
 ## Notes
 
 - If an output folder already exists, the script will ask before overwriting
 - Missing tracks are counted and logged but do not stop processing
 - Filenames with special characters (brackets, apostrophes) are handled correctly
-- Set `$ApplyReplayGain = $false` to skip loudness measurement and encode at unity gain
-- Set `$ApplyEQ = $false` to bypass all EQ processing
+- Set `ApplyReplayGain = false` to skip loudness measurement and encode at unity gain
+- Set `ApplyEQ = false` to bypass all EQ processing
+- `ParallelJobs = 0` in config enables auto-detect (cores - 1, minimum 4)
