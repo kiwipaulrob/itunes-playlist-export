@@ -711,7 +711,7 @@ foreach ($playlistFile in $playlistFiles) {
             -OutputBitrate $using:OutputBitrate `
             -ChannelLayout $using:ChannelLayout `
             -PadWidth $using:padWidth
-    } -ThrottleLimit $using:ParallelJobs
+    } -ThrottleLimit $ParallelJobs
 
     $encodedOK  = 0
     $encodedErr = 0
