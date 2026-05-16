@@ -465,7 +465,7 @@ foreach ($playlistFile in $playlistFiles) {
                         $newIndices += $i
                     }
                 }
-                $tracksToProcess = $newIndices
+                $tracksToProcess = @($newIndices)  # FORCE ARRAY to prevent scalar auto-unboxing
                 # Still remove old files since we're renumbering (if tracks were reordered)
                 Remove-Item -Path $outputFolder -Recurse -Force
                 New-Item -ItemType Directory -Path $outputFolder | Out-Null
@@ -594,7 +594,8 @@ foreach ($playlistFile in $playlistFiles) {
     Write-Host "  Album gain : ${albumGainStr} dB" -ForegroundColor Green
 
     # -- Phase 2: Encode -------------------------------------------------------
-    Write-Host "`n  [Phase 2] Encoding ($totalTracks tracks, up to $ParallelJobs at a time)..." -ForegroundColor Yellow
+    $phase2TrackCount = if ($tracksToProcess.Count -eq 0) { $totalTracks } else { $tracksToProcess.Count }
+    Write-Host "`n  [Phase 2] Encoding ($phase2TrackCount of $totalTracks tracks, up to $ParallelJobs at a time)..." -ForegroundColor Yellow
     $padWidth = [Math]::Max($totalTracks.ToString().Length, 2)
 
     # Helper function for Phase 2 encoding (passed to parallel threads)
@@ -651,8 +652,14 @@ foreach ($playlistFile in $playlistFiles) {
         # Peak limiter - prevents clipping from gain boost and EQ
         $filterChain += ",alimiter=limit=${LimiterCeiling}:attack=5:release=50:level=false"
 
-        # Set audio channels based on layout
-        $acChannels = if ($ChannelLayout -eq "mono") { 1 } else { 2 }
+        # Add mono downmix with intelligent pan filter if needed
+        if ($ChannelLayout -eq "mono") {
+            # Option 1: Production Save - hotter sum (0.6*L + 0.6*R) to recover width loss
+            # Includes frequency compensation: -1.5dB at 300Hz, +2.5dB at 3kHz
+            $filterChain += ",pan=mono|c0=0.6*c0+0.6*c1"
+            $filterChain += ",equalizer=f=300:width_type=o:w=1:g=-1.5"
+            $filterChain += ",equalizer=f=3000:width_type=o:w=1.2:g=2.5"
+        }
 
         $ffOutput = & $FfmpegExe -hide_banner -y `
             -i $SrcPath `
@@ -660,7 +667,6 @@ foreach ($playlistFile in $playlistFiles) {
             -af $filterChain `
             -codec:a libmp3lame `
             -b:a $OutputBitrate `
-            -ac $acChannels `
             -map_metadata 0 `
             $outPath 2>&1
 
@@ -705,14 +711,14 @@ foreach ($playlistFile in $playlistFiles) {
             -OutputBitrate $using:OutputBitrate `
             -ChannelLayout $using:ChannelLayout `
             -PadWidth $using:padWidth
-    } -ThrottleLimit $ParallelJobs
+    } -ThrottleLimit $using:ParallelJobs
 
     $encodedOK  = 0
     $encodedErr = 0
 
     foreach ($r in ($rawResults | Sort-Object Index)) {
         $trackNum = $r.Index + 1
-        $pctComplete = [int](($trackNum / $tracksToProcess.Count) * 100)
+        $pctComplete = [int](($trackNum / $totalTracks) * 100)  # FIXED: use total tracks, not just new ones
         
         Write-Progress -Activity "Phase 2: Encoding audio" -Status "Track $trackNum of $totalTracks - $($r.Status)" -PercentComplete $pctComplete
         Write-Host "    [$trackNum/$totalTracks] $($r.Message)" -ForegroundColor $(if ($r.Status -eq 'OK') { 'Green' } elseif ($r.Status -eq 'MISSING') { 'Yellow' } else { 'Red' })
@@ -753,4 +759,160 @@ foreach ($playlistFile in $playlistFiles) {
 Write-Host "`n----------------------------------------" -ForegroundColor Cyan
 Write-Host "All playlists processed." -ForegroundColor Cyan
 Write-Host "Log file: $logFile" -ForegroundColor Cyan
+
+# -- Phase 3: Robocopy to removable media (optional) ----
+try {
+    Write-Host "`n════════════════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  [Phase 3] Sync to Removable Media" -ForegroundColor Cyan
+    Write-Host "════════════════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    
+    # Get source folder size and file count
+    $srcSize = 0
+    $srcFileCount = 0
+    if (Test-Path $OutputDir) {
+        $srcStats = Get-ChildItem -Path $OutputDir -Recurse -File | Measure-Object -Property Length -Sum
+        $srcSize = $srcStats.Sum
+        $srcFileCount = $srcStats.Count
+    }
+    $srcSizeGB = [Math]::Round($srcSize / 1GB, 2)
+    $playlistCount = (Get-ChildItem -Path $OutputDir -Directory).Count
+    
+    Write-Host "`n  Source Folder : $OutputDir"
+    Write-Host "  Total Size    : $srcSizeGB GB ($srcFileCount files, $playlistCount playlists)"
+    
+    # List removable drives
+    Write-Host "`n  Detecting removable drives..."
+    $volumes = Get-Volume | Where-Object { $_.DriveType -eq 'Removable' }
+    
+    if ($volumes.Count -eq 0) {
+        Write-Host "  No removable drives detected.`n" -ForegroundColor Yellow
+    } else {
+        Write-Host "`n  Available removable media:`n" -ForegroundColor Yellow
+        $drives = @()
+        for ($i = 0; $i -lt $volumes.Count; $i++) {
+            $vol = $volumes[$i]
+            $driveLetter = $vol.DriveLetter
+            $label = if ($vol.FileSystemLabel) { $vol.FileSystemLabel } else { "(no label)" }
+            $freeGB = [Math]::Round($vol.SizeRemaining / 1GB, 2)
+            Write-Host "    [$($i+1)] $driveLetter`:\  [$label] - $freeGB GB free"
+            $drives += $driveLetter
+        }
+        
+        Write-Host "`n  ─────────────────────────────────────────────────────────────" -ForegroundColor Gray
+        Write-Host "`n  (N) Don't sync                  [Default]" -ForegroundColor Green
+        Write-Host "      Leave everything as-is`n"
+        Write-Host "  (S) Sync changed files only"
+        Write-Host "      Copy new/updated files to media"
+        Write-Host "      Keep existing files on media untouched`n"
+        Write-Host "  (M) Mirror - full sync & cleanup" -ForegroundColor Red
+        Write-Host "      Copy all files from source to media"
+        Write-Host "      ⚠ DELETE everything on media not in source`n"
+        Write-Host "  (D) Select different drive"
+        Write-Host "      Choose from available removable media"
+        
+        Write-Host "`n  ─────────────────────────────────────────────────────────────`n" -ForegroundColor Gray
+        $phase3Action = Read-Host "  Choose: (N)o / (S)ync / (M)irror / (D)rive select"
+        
+        if ($phase3Action -in @('d', 'D')) {
+            $driveChoice = Read-Host "  Select drive number (1-$($drives.Count))"
+            if ($driveChoice -match '^\d+$' -and [int]$driveChoice -ge 1 -and [int]$driveChoice -le $drives.Count) {
+                $selectedDrive = $drives[[int]$driveChoice - 1]
+                Write-Host "  Selected: $selectedDrive`:" -ForegroundColor Cyan
+                # Ask again for sync type
+                Write-Host "`n  (N) Don't sync" -ForegroundColor Green
+                Write-Host "  (S) Sync changed files only"
+                Write-Host "  (M) Mirror - full sync & cleanup`n" -ForegroundColor Red
+                $phase3Action = Read-Host "  Choose: (N)o / (S)ync / (M)irror"
+            } else {
+                Write-Host "  Invalid selection." -ForegroundColor Red
+                $phase3Action = 'n'
+            }
+        } else {
+            # Get the first removable drive for default display
+            $selectedDrive = if ($volumes.Count -gt 0) { $volumes[0].DriveLetter } else { $null }
+        }
+        
+        if ($phase3Action -in @('s', 'S', 'm', 'M')) {
+            if (-not $selectedDrive) {
+                Write-Host "  Error: No drive selected." -ForegroundColor Red
+            } else {
+                $destPath = "$selectedDrive`:"
+                $destVolume = Get-Volume -DriveLetter $selectedDrive -ErrorAction SilentlyContinue
+                if (-not $destVolume) {
+                    Write-Host "  Error: Drive $destPath not accessible." -ForegroundColor Red
+                } else {
+                    $destFreeGB = [Math]::Round($destVolume.SizeRemaining / 1GB, 2)
+                    $destLabel = if ($destVolume.FileSystemLabel) { $destVolume.FileSystemLabel } else { "(no label)" }
+                    
+                    # Get existing files on destination
+                    $destSize = 0
+                    $destFileCount = 0
+                    if (Test-Path $destPath) {
+                        $destStats = Get-ChildItem -Path $destPath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+                        $destSize = $destStats.Sum
+                        $destFileCount = $destStats.Count
+                    }
+                    $destSizeGB = [Math]::Round($destSize / 1GB, 2)
+                    
+                    Write-Host "`n  ────────────────────────────────────────────────────────────"
+                    Write-Host "  Destination   : $destPath`\ [$destLabel]" -ForegroundColor Cyan
+                    Write-Host "  Current       : $destSizeGB GB ($destFileCount files)"
+                    Write-Host "  Free Space    : $destFreeGB GB available"
+                    
+                    if ($phase3Action -in @('s', 'S')) {
+                        $resultGB = [Math]::Round(($srcSize + $destSize) / 1GB, 2)
+                        Write-Host "  ────────────────────────────────────────────────────────────"
+                        Write-Host "  Action: Copy new/changed files"
+                        Write-Host "          Keep existing files on media"
+                        Write-Host "  Result: ~$resultGB GB total (old + new)"
+                    } else {
+                        Write-Host "  ────────────────────────────────────────────────────────────"
+                        Write-Host "  Action: Mirror all files from source"
+                        Write-Host "          ⚠ DELETE $destSizeGB GB of existing media" -ForegroundColor Red
+                        Write-Host "  Result: ~$srcSizeGB GB (exact copy)"
+                    }
+                    
+                    Write-Host "`n  ────────────────────────────────────────────────────────────`n" -ForegroundColor Gray
+                    $confirm = Read-Host "  Proceed with copy? (Y)es / (N)o"
+                    
+                    if ($confirm -in @('y', 'Y')) {
+                        Write-Host "`n  Starting robocopy..." -ForegroundColor Yellow
+                        
+                        $robocopyFlags = "/R:1 /W:1 /NFL /NDL /NP /UNILOG+:$destPath\robocopy.log"
+                        
+                        if ($phase3Action -in @('s', 'S')) {
+                            # Sync without delete
+                            $robocopyCmd = "robocopy `"$OutputDir`" `"$destPath`" /S $robocopyFlags"
+                        } else {
+                            # Mirror with delete (dangerous!)
+                            $robocopyCmd = "robocopy `"$OutputDir`" `"$destPath`" /S /MIR $robocopyFlags"
+                        }
+                        
+                        Invoke-Expression $robocopyCmd
+                        $robocopyExitCode = $LASTEXITCODE
+                        
+                        # Robocopy exit codes: 0-7 = success (with varying levels of info)
+                        if ($robocopyExitCode -le 7) {
+                            Write-Host "`n  ✓ Sync completed successfully." -ForegroundColor Green
+                            if (Test-Path "$destPath\robocopy.log") {
+                                Write-Host "  Log: $destPath\robocopy.log" -ForegroundColor Cyan
+                            }
+                        } else {
+                            Write-Host "`n  ⚠ Robocopy reported issues (exit code: $robocopyExitCode)." -ForegroundColor Yellow
+                            if (Test-Path "$destPath\robocopy.log") {
+                                Write-Host "  Log: $destPath\robocopy.log" -ForegroundColor Cyan
+                            }
+                        }
+                    } else {
+                        Write-Host "  Sync cancelled." -ForegroundColor Yellow
+                    }
+                }
+            }
+        }
+    }
+} catch {
+    Write-Host "  Phase 3 error: $_" -ForegroundColor Yellow
+}
+
+Write-Host "`n----------------------------------------" -ForegroundColor Cyan
 Read-Host "`nPress Enter to exit"

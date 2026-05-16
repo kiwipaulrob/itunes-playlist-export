@@ -107,6 +107,25 @@ The script tracks which playlists have been encoded using a manifest file (`.exp
 
 This saves time when updating playlists frequently.
 
+## Sync to Removable Media (Phase 3)
+
+After encoding all playlists, the script optionally syncs your music files to a USB drive or other removable media:
+
+**Options:**
+- **(N) Don't sync** — Exit without copying (default)
+- **(S) Sync changed files** — Copy new/updated files to media; keep existing files untouched (safe, incremental)
+- **(M) Mirror with cleanup** — Copy everything and delete old files from media (full sync, but dangerous — **removes personal files**)
+- **(D) Select drive** — Choose a different removable drive first
+
+**How it works:**
+- Auto-detects removable drives (USB, memory cards, external drives)
+- Shows source size, destination info, and available free space
+- Uses `robocopy` for fast, reliable file sync
+- Writes a log to the destination drive: `robocopy.log`
+- Safe by default: option (S) never deletes; option (M) prompts for confirmation first
+
+**Example:** Copy your encoded playlists to a USB drive for car stereo or portable device in one step.
+
 ## Notes
 
 - If an output folder already exists, the script will ask before overwriting

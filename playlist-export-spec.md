@@ -319,6 +319,39 @@ After each playlist, append to `export_log.txt` in `$OutputDir`:
 - Album gain applied (dB)
 - Any errors (missing file, ffmpeg failure, path decode failure)
 
+### Step 5 — Sync to Removable Media (Phase 3, optional)
+
+After all playlists are encoded, script prompts user to optionally sync files to removable media (USB drive, memory card, etc.):
+
+**Prompt Menu:**
+```
+(N) Don't sync                [Default]
+    Leave everything as-is
+
+(S) Sync changed files only
+    Copy new/updated files to media
+    Keep existing files on media untouched
+    → Result: media may accumulate orphaned playlists over time
+
+(M) Mirror - full sync & cleanup
+    Copy all files from source to media
+    ⚠ DELETE everything on media not in source
+    → Result: exact copy of source; data loss if user has personal files on media
+
+(D) Select different drive
+    Choose from available removable drives first, then choose sync type
+```
+
+**Behaviour:**
+- Auto-detects removable drives (USB, memory cards, etc.)
+- Displays: source size/count, destination drive info, free space
+- Uses `robocopy` with `/S` flag (sync subdirectories)
+  - Option **(S)**: robocopy without `/MIR` (additive, safe)
+  - Option **(M)**: robocopy with `/MIR` (destructive, full mirror with delete)
+- Writes robocopy log to root of destination drive: `<drive>:\robocopy.log`
+- Evaluates robocopy exit codes; 0-7 = success, 8+ = error
+- Error handling: if drive inaccessible, shows warning and returns to menu
+
 ---
 
 ## Output Structure Example
