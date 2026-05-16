@@ -14,7 +14,7 @@ A Windows PowerShell script (launched via a `.bat` double-click file) that reads
 
 - **Always ask before writing code.** Propose changes and wait for explicit approval before editing any script file.
 - Do not write code without being explicitly asked.
-- Configuration variables go in `export-playlists.config.ps1`, not in the main script and not as command-line arguments.
+- Configuration variables go in `export-playlists.ini`, not in the main script and not as command-line arguments.
 - Update the specification before writing code.
 
 ---
@@ -89,7 +89,7 @@ The script now tracks playlist changes via a **manifest file** (`.export-manifes
 | ReplayGain | Album mode, baked into audio (re-encoded); can be disabled via `$ApplyReplayGain` |
 | Silence removal | Trim from start and end of each track |
 | Existing output folder | Ask user (y/n) before overwriting |
-| Configuration | Separate config file (`export-playlists.config.ps1`) |
+| Configuration | INI file (`export-playlists.ini`) |
 
 ---
 
@@ -154,47 +154,76 @@ P:\music\The Jolly Boys\Great Expectation\03 Rehab (orig. Amy Winehouse).mp3
 
 | File | Purpose |
 |---|---|
-| `export-playlists.config.ps1` | All user-configurable variables — edit this file only |
+| `export-playlists.ini` | All user-configurable settings — edit this file only |
 | `export-playlists.ps1` | Main script logic — do not edit |
 | `export-playlists.bat` | Double-click launcher |
 
 ---
 
-## Configuration File (`export-playlists.config.ps1`)
+## Configuration File (`export-playlists.ini`)
 
-```powershell
-# ============================================================
-# Playlist Export Tool — Configuration
-# Edit this file to configure the tool. Do not edit the .ps1.
-# ============================================================
+All settings are stored in a single INI file. Edit values as needed.
 
-# --- Paths ---
-$PlaylistDir        = "C:\Playlists"     # Folder containing .m3u8 or .xml playlist files
-$OutputDir          = "D:\Exported"      # Root output folder
-$FfmpegPath         = "ffmpeg.exe"       # Full path, or just "ffmpeg.exe" if ffmpeg is in PATH
+```ini
+[Paths]
+# Folder containing .m3u8 or .xml playlist files
+PlaylistDir = C:\Playlists
 
-# --- Audio ---
-$OutputBitrate      = "192k"            # Output MP3 bitrate (192k is sufficient for 40mm drivers)
-$SilenceThresholdDB = -60               # Silence detection level in dB (lower = less aggressive)
+# Root output folder (playlists will create subfolders here)
+OutputDir = D:\Exported
 
-# --- ReplayGain (album-level loudness normalisation) ---
-# Set $ApplyReplayGain = $false to skip loudness measurement and apply no volume adjustment
-$ApplyReplayGain    = $true
-$TargetLUFS         = -16.0              # Target loudness in LUFS (-16 is good for small speakers; -14 is louder)
-$LimiterCeiling     = 0.95              # Peak limiter ceiling as linear amplitude (0.95 = -0.45 dBFS)
-$ParallelJobs       = 0                 # Parallel jobs: 0 = auto-detect (cores - 1, min 4); set explicit number to override
+# Full path to ffmpeg.exe (leave as ffmpeg.exe if in PATH)
+FfmpegPath = ffmpeg.exe
 
-# --- EQ (optimised for dual 40mm portable speaker) ---
-# Set $ApplyEQ = $false to bypass all EQ filters
-$ApplyEQ            = $true
-$EQ_HighpassHz      = 80                # Roll off sub-bass below this frequency (Hz)
-$EQ_LowMidBoostHz   = 150              # Centre frequency for low-mid warmth boost (Hz)
-$EQ_LowMidBoostDB   = 3                # Low-mid boost amount (dB)
-$EQ_PresenceHz      = 3500             # Centre frequency for presence/clarity boost (Hz)
-$EQ_PresenceDB      = 2                # Presence boost amount (dB)
-$EQ_HiShelfHz       = 12000            # High shelf cut start frequency (Hz)
-$EQ_HiShelfDB       = -2               # High shelf cut amount (dB) — tames MP3 harshness
+[Audio]
+# Output MP3 bitrate (192k for stereo, 160k for mono storage)
+OutputBitrate = 192k
+
+# Audio channel layout: stereo or mono
+ChannelLayout = stereo
+
+# Silence detection threshold in dB (lower = less aggressive)
+SilenceThresholdDB = -60
+
+[ReplayGain]
+# Set to false to skip loudness measurement and apply no volume adjustment
+ApplyReplayGain = true
+
+# Target loudness in LUFS (-16 for small speakers, -14 is louder)
+TargetLUFS = -16.0
+
+# Peak limiter ceiling as linear amplitude (0.95 = approx -0.45 dBFS)
+LimiterCeiling = 0.95
+
+# Parallel jobs: 0 = auto-detect (cores - 1, min 4); set number to override
+ParallelJobs = 0
+
+[EQ]
+# Set to false to bypass all EQ processing
+ApplyEQ = true
+
+# Roll off sub-bass below this frequency (Hz)
+EQ_HighpassHz = 80
+
+# Centre frequency for low-mid warmth boost (Hz)
+EQ_LowMidBoostHz = 150
+
+# Low-mid boost gain (dB)
+EQ_LowMidBoostDB = 3
+
+# Centre frequency for presence/clarity boost (Hz)
+EQ_PresenceHz = 3500
+
+# Presence boost gain (dB)
+EQ_PresenceDB = 2
+
+# High shelf cut start frequency (Hz)
+EQ_HiShelfHz = 12000
+
+# High shelf cut gain (dB) — tames MP3 harshness
+EQ_HiShelfDB = -2
 ```
+
 
 ---
 
@@ -296,6 +325,6 @@ D:\Exported\
 
 ## Deliverables
 
-1. `export-playlists.config.ps1` — user configuration (edit this)
+1. `export-playlists.ini` — user configuration (edit this)
 2. `export-playlists.ps1` — main script (do not edit)
 3. `export-playlists.bat` — double-click launcher

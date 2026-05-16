@@ -6,20 +6,92 @@
     album ReplayGain, silence removal and EQ, and saves numbered files
     into per-playlist output folders.
 
-    Configure all settings in export-playlists.config.ps1
+    Configure all settings in export-playlists.ini
 #>
 
 Set-StrictMode -Off
 
-# -- Load configuration --------------------------------------------------------
-$configFile = Join-Path $PSScriptRoot "export-playlists.config.ps1"
+# -- Load configuration from INI file ------------------------------------------
+function Read-IniFile {
+    param([string]$Path)
+    $config = @{}
+    $currentSection = ""
+    
+    if (-not (Test-Path $Path)) {
+        Write-Host "ERROR: Configuration file not found: $Path" -ForegroundColor Red
+        exit 1
+    }
+    
+    Get-Content $Path | ForEach-Object {
+        $line = $_.Trim()
+        
+        # Skip empty lines and comments
+        if (-not $line -or $line.StartsWith("#")) { return }
+        
+        # Section header [Name]
+        if ($line -match '^\[(.+)\]$') {
+            $currentSection = $matches[1]
+            $config[$currentSection] = @{}
+            return
+        }
+        
+        # Key=Value pairs
+        if ($line -match '^(.+?)\s*=\s*(.*)$') {
+            $key = $matches[1].Trim()
+            $value = $matches[2].Trim()
+            
+            # Remove quotes if present
+            $value = $value -replace '^"(.*)"$', '$1'
+            $value = $value -replace "^'(.*)'$", '$1'
+            
+            # Convert string values to appropriate types
+            if ($value -eq 'true') { $value = $true }
+            elseif ($value -eq 'false') { $value = $false }
+            elseif ($value -match '^\d+$') { $value = [int]$value }
+            elseif ($value -match '^\d+\.?\d*$') { $value = [double]$value }
+            
+            if ($currentSection) {
+                $config[$currentSection][$key] = $value
+            }
+        }
+    }
+    
+    return $config
+}
+
+# Load INI configuration
+$configFile = Join-Path $PSScriptRoot "export-playlists.ini"
 if (-not (Test-Path $configFile)) {
     Write-Host "ERROR: Configuration file not found: $configFile" -ForegroundColor Red
-    Write-Host "Please ensure export-playlists.config.ps1 is in the same folder as this script."
+    Write-Host "Please ensure export-playlists.ini is in the same folder as this script."
     Read-Host "Press Enter to exit"
     exit 1
 }
-. $configFile
+
+$iniConfig = Read-IniFile $configFile
+
+# Extract variables from INI (with defaults as fallback)
+$PlaylistDir        = $iniConfig["Paths"]["PlaylistDir"]
+$OutputDir          = $iniConfig["Paths"]["OutputDir"]
+$FfmpegPath         = $iniConfig["Paths"]["FfmpegPath"]
+
+$OutputBitrate      = $iniConfig["Audio"]["OutputBitrate"]
+$ChannelLayout      = $iniConfig["Audio"]["ChannelLayout"]
+$SilenceThresholdDB = $iniConfig["Audio"]["SilenceThresholdDB"]
+
+$ApplyReplayGain    = $iniConfig["ReplayGain"]["ApplyReplayGain"]
+$TargetLUFS         = $iniConfig["ReplayGain"]["TargetLUFS"]
+$LimiterCeiling     = $iniConfig["ReplayGain"]["LimiterCeiling"]
+$ParallelJobs       = $iniConfig["ReplayGain"]["ParallelJobs"]
+
+$ApplyEQ            = $iniConfig["EQ"]["ApplyEQ"]
+$EQ_HighpassHz      = $iniConfig["EQ"]["EQ_HighpassHz"]
+$EQ_LowMidBoostHz   = $iniConfig["EQ"]["EQ_LowMidBoostHz"]
+$EQ_LowMidBoostDB   = $iniConfig["EQ"]["EQ_LowMidBoostDB"]
+$EQ_PresenceHz      = $iniConfig["EQ"]["EQ_PresenceHz"]
+$EQ_PresenceDB      = $iniConfig["EQ"]["EQ_PresenceDB"]
+$EQ_HiShelfHz       = $iniConfig["EQ"]["EQ_HiShelfHz"]
+$EQ_HiShelfDB       = $iniConfig["EQ"]["EQ_HiShelfDB"]
 
 # -- Auto-detect CPU cores if $ParallelJobs not explicitly set ----------------
 if ($ParallelJobs -eq 0) {
@@ -273,7 +345,7 @@ try {
 }
 catch {
     Write-Host "ERROR: ffmpeg not found at: $FfmpegPath" -ForegroundColor Red
-    Write-Host "Install ffmpeg and update `$FfmpegPath in export-playlists.config.ps1"
+    Write-Host "Install ffmpeg and update FfmpegPath in export-playlists.ini"
     Read-Host "Press Enter to exit"
     exit 1
 }
@@ -281,7 +353,7 @@ catch {
 # Validate playlist directory
 if (-not (Test-Path $PlaylistDir)) {
     Write-Host "ERROR: Playlist directory not found: $PlaylistDir" -ForegroundColor Red
-    Write-Host "Update `$PlaylistDir in export-playlists.config.ps1"
+    Write-Host "Update PlaylistDir in export-playlists.ini"
     Read-Host "Press Enter to exit"
     exit 1
 }
@@ -544,6 +616,7 @@ foreach ($playlistFile in $playlistFiles) {
             [int]$EQ_HiShelfDB,
             [double]$LimiterCeiling,
             [string]$OutputBitrate,
+            [string]$ChannelLayout,
             [string]$PadWidth
         )
 
@@ -578,12 +651,16 @@ foreach ($playlistFile in $playlistFiles) {
         # Peak limiter - prevents clipping from gain boost and EQ
         $filterChain += ",alimiter=limit=${LimiterCeiling}:attack=5:release=50:level=false"
 
+        # Set audio channels based on layout
+        $acChannels = if ($ChannelLayout -eq "mono") { 1 } else { 2 }
+
         $ffOutput = & $FfmpegExe -hide_banner -y `
             -i $SrcPath `
             -map 0:a `
             -af $filterChain `
             -codec:a libmp3lame `
             -b:a $OutputBitrate `
+            -ac $acChannels `
             -map_metadata 0 `
             $outPath 2>&1
 
@@ -626,6 +703,7 @@ foreach ($playlistFile in $playlistFiles) {
             -EQ_HiShelfDB $using:EQ_HiShelfDB `
             -LimiterCeiling $using:LimiterCeiling `
             -OutputBitrate $using:OutputBitrate `
+            -ChannelLayout $using:ChannelLayout `
             -PadWidth $using:padWidth
     } -ThrottleLimit $ParallelJobs
 
