@@ -134,3 +134,52 @@ After encoding all playlists, the script optionally syncs your music files to a 
 - Set `ApplyReplayGain = false` to skip loudness measurement and encode at unity gain
 - Set `ApplyEQ = false` to bypass all EQ processing
 - `ParallelJobs = 0` in config enables auto-detect (cores - 1, minimum 4)
+
+## Changelog
+
+### v1.8 (Current)
+**Major stability and performance improvements:**
+- ✅ **Real-time progress bars** — Phase 1 & 2 now show live progress as tracks complete (previously froze during encoding)
+- ✅ **Robust path handling** — All file system operations use `-LiteralPath` to safely handle bracket characters in filenames
+- ✅ **Safer robocopy sync** — Phase 3 now uses `& robocopy` with array arguments instead of `Invoke-Expression` (prevents parsing errors with unusual paths)
+- ✅ **Silent track handling** — LUFS measurement now gracefully handles `-inf` (pure silence) with fallback to -70.0 dB
+- ✅ **Folder name sanitization** — Removes trailing spaces and periods to prevent "ghost directories"
+- ✅ **Performance optimization** — INI parsing now uses `[System.IO.File]::ReadAllLines()` for faster startup
+
+### v1.7.1 (Hotfix)
+- Fixed: `-ThrottleLimit $using:` variable scope error in Phase 2
+
+### v1.7
+- Added Phase 3: optional robocopy sync to removable media with 3 modes (No sync / Sync / Mirror)
+- Fixed mono downmix with intelligent pan filter (`0.6*L + 0.6*R`) instead of simple `-ac 1`
+- Consolidated mono variant config into comments (no separate `.ini` file needed)
+
+### v1.6.1
+- Fixed: "New only" encoding mode crashes (scalar unboxing + progress percentage overflow)
+- Improved manifest-based change detection accuracy
+
+### v1.6
+- Migrated config from `.ps1` to `.ini` file format
+- Added `ChannelLayout` option for stereo/mono export
+
+### v1.5+
+- CPU core auto-scaling (`ParallelJobs = 0` for auto-detect)
+- TrackLUFS per-track manifest storage for consistent album gain on updates
+- Phase 2 parallelization with `ForEach-Object -Parallel`
+
+### v1.4.1
+- Fixed SHA256 hash computation (required `::Create()` call)
+
+### v1.4
+- Manifest-based change detection (`.export-manifest.json`)
+
+### v1.3
+- Fixed corrupted artwork crash (added `-map 0:a` to ffmpeg)
+
+### v1.2
+- Phase 2 parallelization with throttle limit
+
+### v1.1
+- Fixed bracket wildcard crashes (added `-LiteralPath`)
+- Fixed `$ParallelJobs` null crashes
+- Fixed PowerShell 7 scriptblock serialization for parallel scope

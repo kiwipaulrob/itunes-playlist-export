@@ -1,4 +1,14 @@
-# Playlist Export Tool — Specification
+# Playlist Export Tool — Specification (v1.8)
+
+## Current Version
+
+**v1.8** — Stability & Performance Release
+- Real-time progress bars in Phase 1 & 2 (no more silent freezes during encoding)
+- Robust path handling with `-LiteralPath` for bracket-safe filenames
+- Safer Phase 3 robocopy using `&` operator instead of `Invoke-Expression`
+- Silent track handling (LUFS = -inf)
+- Folder name sanitization (trailing spaces/dots)
+- Performance optimization (INI parsing with `ReadAllLines`)
 
 ## Overview
 

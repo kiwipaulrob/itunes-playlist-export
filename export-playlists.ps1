@@ -17,13 +17,14 @@ function Read-IniFile {
     $config = @{}
     $currentSection = ""
     
-    if (-not (Test-Path $Path)) {
+    if (-not (Test-Path -LiteralPath $Path)) {
         Write-Host "ERROR: Configuration file not found: $Path" -ForegroundColor Red
         exit 1
     }
     
-    Get-Content $Path | ForEach-Object {
-        $line = $_.Trim()
+    $lines = [System.IO.File]::ReadAllLines($Path)
+    foreach ($line in $lines) {
+        $line = $line.Trim()
         
         # Skip empty lines and comments
         if (-not $line -or $line.StartsWith("#")) { return }
@@ -61,7 +62,7 @@ function Read-IniFile {
 
 # Load INI configuration
 $configFile = Join-Path $PSScriptRoot "export-playlists.ini"
-if (-not (Test-Path $configFile)) {
+if (-not (Test-Path -LiteralPath $configFile)) {
     Write-Host "ERROR: Configuration file not found: $configFile" -ForegroundColor Red
     Write-Host "Please ensure export-playlists.ini is in the same folder as this script."
     Read-Host "Press Enter to exit"
@@ -125,7 +126,7 @@ function ConvertFrom-iTunesPath {
 # -- Helper: sanitise a string for use as a folder name -----------------------
 function Get-SafeFolderName {
     param([string]$Name)
-    return ($Name -replace '[\\/:*?"<>|]', '_').Trim()
+    return ($Name -replace '[\\/:*?"<>|]', '_').Trim().TrimEnd(' .')
 }
 
 # -- Helper: read manifest JSON file from output folder --------------------------
@@ -329,7 +330,10 @@ function Measure-TrackLUFS {
     $stderr = $proc.StandardError.ReadToEnd()
     $proc.WaitForExit()
     # Match the summary line: "    I:         -14.5 LUFS"
-    if ($stderr -match 'Integrated loudness:\s+I:\s+([-\d.]+)\s+LUFS') {
+    if ($stderr -match 'Integrated loudness:\s+I:\s+([-\w.]+)\s+LUFS') {
+        if ($Matches[1] -eq '-inf') {
+            return -70.0  # Return safe floor value for pure silence
+        }
         return [double]$Matches[1]
     }
     return $null
@@ -541,8 +545,10 @@ foreach ($playlistFile in $playlistFiles) {
         Write-Host "`n  [Phase 1] Measuring loudness ($($tracksToProcess.Count) tracks of $totalTracks, up to $ParallelJobs at a time)..." -ForegroundColor Yellow
         $measureFuncDef = "function Measure-TrackLUFS { ${function:Measure-TrackLUFS} }"
         $ffExe          = $FfmpegPath
+        
+        $processedCount = 0
 
-        $rawResults = $tracksToProcess | ForEach-Object -Parallel {
+        $tracksToProcess | ForEach-Object -Parallel {
             . ([scriptblock]::Create($using:measureFuncDef))
             $i       = $_
             $src     = ($using:trackPaths)[$i]
@@ -554,12 +560,12 @@ foreach ($playlistFile in $playlistFiles) {
             }
 
             [PSCustomObject]@{ Index = $i; Path = $src; LUFS = $lufs; Missing = $missing }
-        } -ThrottleLimit $ParallelJobs
-
-        foreach ($r in ($rawResults | Sort-Object Index)) {
+        } -ThrottleLimit $ParallelJobs | ForEach-Object {
+            $r = $_
+            $script:processedCount++
             $trackNum = $r.Index + 1
             $leaf     = Split-Path $r.Path -Leaf
-            $pctComplete = [int](($trackNum / $totalTracks) * 100)
+            $pctComplete = [int](($script:processedCount / $tracksToProcess.Count) * 100)
             
             Write-Progress -Activity "Phase 1: Measuring loudness" -Status "Track $trackNum of $totalTracks" -PercentComplete $pctComplete
             
@@ -690,7 +696,14 @@ foreach ($playlistFile in $playlistFiles) {
     # Serialize Encode-TrackMP3 function for parallel scope
     $encodeFuncDef = "function Encode-TrackMP3 { ${function:Encode-TrackMP3} }"
 
-    $rawResults = $tracksToProcess | ForEach-Object -Parallel {
+    # Serialize Encode-TrackMP3 function for parallel scope
+    $encodeFuncDef = "function Encode-TrackMP3 { ${function:Encode-TrackMP3} }"
+    
+    $processedCount = 0
+    $encodedOK  = 0
+    $encodedErr = 0
+
+    $tracksToProcess | ForEach-Object -Parallel {
         . ([scriptblock]::Create($using:encodeFuncDef))
         Encode-TrackMP3 `
             -Index $_ `
@@ -711,27 +724,24 @@ foreach ($playlistFile in $playlistFiles) {
             -OutputBitrate $using:OutputBitrate `
             -ChannelLayout $using:ChannelLayout `
             -PadWidth $using:padWidth
-    } -ThrottleLimit $ParallelJobs
-
-    $encodedOK  = 0
-    $encodedErr = 0
-
-    foreach ($r in ($rawResults | Sort-Object Index)) {
+    } -ThrottleLimit $ParallelJobs | ForEach-Object {
+        $r = $_
+        $script:processedCount++
         $trackNum = $r.Index + 1
-        $pctComplete = [int](($trackNum / $totalTracks) * 100)  # FIXED: use total tracks, not just new ones
+        $pctComplete = [int](($script:processedCount / $phase2TrackCount) * 100)
         
         Write-Progress -Activity "Phase 2: Encoding audio" -Status "Track $trackNum of $totalTracks - $($r.Status)" -PercentComplete $pctComplete
         Write-Host "    [$trackNum/$totalTracks] $($r.Message)" -ForegroundColor $(if ($r.Status -eq 'OK') { 'Green' } elseif ($r.Status -eq 'MISSING') { 'Yellow' } else { 'Red' })
 
         if ($r.Status -eq 'OK') {
-            $encodedOK++
+            $script:encodedOK++
         }
         elseif ($r.Status -eq 'ERROR') {
-            $encodedErr++
+            $script:encodedErr++
             Add-Content -Path $logFile -Value "  [$playlistName] TRACK ERROR [$trackNum/$totalTracks]: $($r.OutName)"
         }
         elseif ($r.Status -eq 'MISSING') {
-            $missingCount++
+            $script:missingCount++
             Add-Content -Path $logFile -Value "  [$playlistName] TRACK MISSING [$trackNum/$totalTracks]: $($r.OutName)"
         }
     }
@@ -769,13 +779,13 @@ try {
     # Get source folder size and file count
     $srcSize = 0
     $srcFileCount = 0
-    if (Test-Path $OutputDir) {
-        $srcStats = Get-ChildItem -Path $OutputDir -Recurse -File | Measure-Object -Property Length -Sum
+    if (Test-Path -LiteralPath $OutputDir) {
+        $srcStats = Get-ChildItem -LiteralPath $OutputDir -Recurse -File | Measure-Object -Property Length -Sum
         $srcSize = $srcStats.Sum
         $srcFileCount = $srcStats.Count
     }
     $srcSizeGB = [Math]::Round($srcSize / 1GB, 2)
-    $playlistCount = (Get-ChildItem -Path $OutputDir -Directory).Count
+    $playlistCount = (Get-ChildItem -LiteralPath $OutputDir -Directory).Count
     
     Write-Host "`n  Source Folder : $OutputDir"
     Write-Host "  Total Size    : $srcSizeGB GB ($srcFileCount files, $playlistCount playlists)"
@@ -847,8 +857,8 @@ try {
                     # Get existing files on destination
                     $destSize = 0
                     $destFileCount = 0
-                    if (Test-Path $destPath) {
-                        $destStats = Get-ChildItem -Path $destPath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+                    if (Test-Path -LiteralPath $destPath) {
+                        $destStats = Get-ChildItem -LiteralPath $destPath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
                         $destSize = $destStats.Sum
                         $destFileCount = $destStats.Count
                     }
@@ -878,17 +888,24 @@ try {
                     if ($confirm -in @('y', 'Y')) {
                         Write-Host "`n  Starting robocopy..." -ForegroundColor Yellow
                         
-                        $robocopyFlags = "/R:1 /W:1 /NFL /NDL /NP /UNILOG+:$destPath\robocopy.log"
+                        $robocopyArgs = @(
+                            $OutputDir,
+                            $destPath,
+                            "/R:1", "/W:1", "/NFL", "/NDL", "/NP"
+                        )
                         
                         if ($phase3Action -in @('s', 'S')) {
-                            # Sync without delete
-                            $robocopyCmd = "robocopy `"$OutputDir`" `"$destPath`" /S $robocopyFlags"
+                            # Sync without delete - add /S flag
+                            $robocopyArgs += "/S"
                         } else {
-                            # Mirror with delete (dangerous!)
-                            $robocopyCmd = "robocopy `"$OutputDir`" `"$destPath`" /S /MIR $robocopyFlags"
+                            # Mirror with delete (dangerous!) - add /S and /MIR flags
+                            $robocopyArgs += @("/S", "/MIR")
                         }
                         
-                        Invoke-Expression $robocopyCmd
+                        # Add log file to end
+                        $robocopyArgs += "/UNILOG+:$destPathobocopy.log"
+                        
+                        & robocopy $robocopyArgs
                         $robocopyExitCode = $LASTEXITCODE
                         
                         # Robocopy exit codes: 0-7 = success (with varying levels of info)
