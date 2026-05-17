@@ -562,10 +562,9 @@ foreach ($playlistFile in $playlistFiles) {
             [PSCustomObject]@{ Index = $i; Path = $src; LUFS = $lufs; Missing = $missing }
         } -ThrottleLimit $ParallelJobs | ForEach-Object {
             $r = $_
-            $script:processedCount++
             $trackNum = $r.Index + 1
             $leaf     = Split-Path $r.Path -Leaf
-            $pctComplete = [int](($script:processedCount / $tracksToProcess.Count) * 100)
+            $pctComplete = [int](($processedCount / $tracksToProcess.Count) * 100)
             
             Write-Progress -Activity "Phase 1: Measuring loudness" -Status "Track $trackNum of $totalTracks" -PercentComplete $pctComplete
             
@@ -695,9 +694,6 @@ foreach ($playlistFile in $playlistFiles) {
 
     # Serialize Encode-TrackMP3 function for parallel scope
     $encodeFuncDef = "function Encode-TrackMP3 { ${function:Encode-TrackMP3} }"
-
-    # Serialize Encode-TrackMP3 function for parallel scope
-    $encodeFuncDef = "function Encode-TrackMP3 { ${function:Encode-TrackMP3} }"
     
     $processedCount = 0
     $encodedOK  = 0
@@ -726,22 +722,22 @@ foreach ($playlistFile in $playlistFiles) {
             -PadWidth $using:padWidth
     } -ThrottleLimit $ParallelJobs | ForEach-Object {
         $r = $_
-        $script:processedCount++
+        $processedCount++
         $trackNum = $r.Index + 1
-        $pctComplete = [int](($script:processedCount / $phase2TrackCount) * 100)
+        $pctComplete = [int](($processedCount / $phase2TrackCount) * 100)
         
         Write-Progress -Activity "Phase 2: Encoding audio" -Status "Track $trackNum of $totalTracks - $($r.Status)" -PercentComplete $pctComplete
         Write-Host "    [$trackNum/$totalTracks] $($r.Message)" -ForegroundColor $(if ($r.Status -eq 'OK') { 'Green' } elseif ($r.Status -eq 'MISSING') { 'Yellow' } else { 'Red' })
 
         if ($r.Status -eq 'OK') {
-            $script:encodedOK++
+            $encodedOK++
         }
         elseif ($r.Status -eq 'ERROR') {
-            $script:encodedErr++
+            $encodedErr++
             Add-Content -Path $logFile -Value "  [$playlistName] TRACK ERROR [$trackNum/$totalTracks]: $($r.OutName)"
         }
         elseif ($r.Status -eq 'MISSING') {
-            $script:missingCount++
+            $missingCount++
             Add-Content -Path $logFile -Value "  [$playlistName] TRACK MISSING [$trackNum/$totalTracks]: $($r.OutName)"
         }
     }
@@ -902,8 +898,8 @@ try {
                             $robocopyArgs += @("/S", "/MIR")
                         }
                         
-                        # Add log file to end
-                        $robocopyArgs += "/UNILOG+:$destPathobocopy.log"
+                        # Add log file to end (use forward slash to avoid \r carriage return)
+                        $robocopyArgs += "/UNILOG+:$destPath/robocopy.log"
                         
                         & robocopy $robocopyArgs
                         $robocopyExitCode = $LASTEXITCODE
