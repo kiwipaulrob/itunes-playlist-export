@@ -27,13 +27,13 @@ function Read-IniFile {
         $line = $line.Trim()
         
         # Skip empty lines and comments
-        if (-not $line -or $line.StartsWith("#")) { return }
+        if (-not $line -or $line.StartsWith("#")) { continue }
         
         # Section header [Name]
         if ($line -match '^\[(.+)\]$') {
             $currentSection = $matches[1]
             $config[$currentSection] = @{}
-            return
+            continue
         }
         
         # Key=Value pairs
