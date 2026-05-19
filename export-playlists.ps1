@@ -887,7 +887,7 @@ try {
                         $robocopyArgs = @(
                             $OutputDir,
                             $destPath,
-                            "/R:1", "/W:1", "/NFL", "/NDL", "/NP"
+                            "/R:1", "/W:1", "/TEE", "/NP", "/NDL"
                         )
                         
                         if ($phase3Action -in @('s', 'S')) {
